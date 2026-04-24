@@ -1,0 +1,149 @@
+networks:
+  sp-net:
+
+volumes:
+  pg-auth:
+  pg-acct:
+  pg-tx:
+  redis-data:
+  kafka-data:
+
+services:
+  postgres-auth:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authdb
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: ${PG_AUTH_PW}
+    volumes: [pg-auth:/var/lib/postgresql/data]
+    networks: [sp-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth -d authdb"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  postgres-account:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: accountdb
+      POSTGRES_USER: acct
+      POSTGRES_PASSWORD: ${PG_ACCT_PW}
+    volumes: [pg-acct:/var/lib/postgresql/data]
+    networks: [sp-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U acct -d accountdb"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  postgres-tx:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: txdb
+      POSTGRES_USER: tx
+      POSTGRES_PASSWORD: ${PG_TX_PW}
+    volumes: [pg-tx:/var/lib/postgresql/data]
+    networks: [sp-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tx -d txdb"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PW}", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    networks: [sp-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PW}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes: [kafka-data:/bitnami/kafka]
+    networks: [sp-net]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres-auth:5432/authdb
+      DB_USER: auth
+      DB_PASSWORD: ${PG_AUTH_PW}
+      REDIS_URL: redis://:${REDIS_PW}@redis:6379
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+    depends_on:
+      postgres-auth: { condition: service_healthy }
+      redis:         { condition: service_healthy }
+    ports: ["8081:8080"]
+    networks: [sp-net]
+
+  account:
+    build:
+      context: .
+      dockerfile: services/account/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres-account:5432/accountdb
+      DB_USER: acct
+      DB_PASSWORD: ${PG_ACCT_PW}
+      REDIS_URL: redis://:${REDIS_PW}@redis:6379
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+    depends_on:
+      postgres-account: { condition: service_healthy }
+      redis:            { condition: service_healthy }
+    ports: ["8082:8080"]
+    networks: [sp-net]
+
+  transaction:
+    build:
+      context: .
+      dockerfile: services/transaction/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres-tx:5432/txdb
+      DB_USER: tx
+      DB_PASSWORD: ${PG_TX_PW}
+      REDIS_URL: redis://:${REDIS_PW}@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      ACCOUNT_SERVICE_URL: http://account:8080
+    depends_on:
+      postgres-tx: { condition: service_healthy }
+      redis:       { condition: service_healthy }
+      kafka:       { condition: service_healthy }
+      account:     { condition: service_started }
+    ports: ["8083:8080"]
+    networks: [sp-net]
+
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka: { condition: service_healthy }
+    ports: ["8084:8080"]
+    networks: [sp-net]
