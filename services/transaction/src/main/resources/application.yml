@@ -31,6 +31,10 @@ spring:
 securepay:
   account-service-url: ${ACCOUNT_SERVICE_URL:http://localhost:8082}
   service-token: ${SERVICE_TOKEN:}
+  outbox:
+    poll-ms: ${OUTBOX_POLL_MS:1000}
+    batch-size: ${OUTBOX_BATCH:50}
+    send-timeout-ms: ${OUTBOX_SEND_TIMEOUT_MS:5000}
   jwt:
     issuer: securepay-auth
     access-ttl: PT15M

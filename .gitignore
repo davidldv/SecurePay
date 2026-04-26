@@ -6,3 +6,4 @@ target/
 *.iml
 *.class
 .DS_Store
+.claude/

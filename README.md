@@ -123,8 +123,12 @@ securepay/
 
 - [x] Phase 1: Auth + Account + Flyway + Docker
 - [x] Phase 2: Transaction service (pessimistic lock + idempotency key + Kafka event) + Notification consumer
-- [ ] Phase 3: Hardening — tests (Testcontainers race/idempotency), rate limits, Nginx gateway
+- [x] Phase 3: Outbox pattern, Testcontainers race/idempotency suite, Nginx gateway with `limit_req`
 - [ ] Phase 4: AWS deploy (EC2 + RDS + ElastiCache + ALB)
+
+### Gateway (`:8080`)
+
+All client traffic should hit the Nginx gateway. Per-IP rate limits: auth `5r/s` burst 10, accounts `60r/s` burst 120, transactions `30r/s` burst 60. `/internal/*` is hard-blocked (returns 404) — peer-service calls go over the docker network directly.
 
 ## Security notes
 

@@ -18,30 +18,24 @@ public class TransactionService {
     private final TxRecordOps ops;
     private final AccountClient accountClient;
     private final IdempotencyStore idem;
-    private final TxEventPublisher events;
 
     public TransactionService(TransactionRepository repo, TxRecordOps ops,
-                              AccountClient accountClient, IdempotencyStore idem,
-                              TxEventPublisher events) {
+                              AccountClient accountClient, IdempotencyStore idem) {
         this.repo = repo;
         this.ops = ops;
         this.accountClient = accountClient;
         this.idem = idem;
-        this.events = events;
     }
 
     public TransactionRecord initiate(UUID userId, String idempotencyKey,
                                       UUID src, UUID dst, BigDecimal amount, String currency) {
-        // 1. Redis fast dedupe.
         var cached = idem.existing(idempotencyKey, userId);
         if (cached.isPresent()) {
             return ops.byId(cached.get());
         }
 
-        // 2. Insert PENDING (DB unique index is the hard guard).
         TransactionRecord pending = ops.insertPending(idempotencyKey, src, dst, amount, currency, userId);
 
-        // If the row was already COMPLETED/FAILED from a prior attempt, return it.
         if (pending.getStatus() != TxStatus.PENDING) {
             idem.claim(idempotencyKey, userId, pending.getId());
             return pending;
@@ -49,13 +43,11 @@ public class TransactionService {
 
         idem.claim(idempotencyKey, userId, pending.getId());
 
-        // 3. Execute transfer via account-service.
         try {
             accountClient.transfer(pending.getId(), src, dst, amount, currency);
             ops.markCompleted(pending.getId());
         } catch (AccountClient.AccountCallException e) {
             if (e.status == HttpStatus.CONFLICT) {
-                // Duplicate replay recognised downstream = success idempotently.
                 ops.markCompleted(pending.getId());
             } else {
                 ops.markFailed(pending.getId(), "account-service " + e.status + ": " + e.body);
@@ -64,10 +56,7 @@ public class TransactionService {
             ops.markFailed(pending.getId(), e.getMessage());
         }
 
-        TransactionRecord refreshed = ops.byId(pending.getId());
-        if (refreshed.getStatus() == TxStatus.COMPLETED) events.publishCompleted(refreshed);
-        else if (refreshed.getStatus() == TxStatus.FAILED) events.publishFailed(refreshed);
-        return refreshed;
+        return ops.byId(pending.getId());
     }
 
     @Transactional(readOnly = true)

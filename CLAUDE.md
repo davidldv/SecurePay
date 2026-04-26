@@ -73,6 +73,16 @@ Each service follows DDD-style packages: `api/` (controllers + DTOs), `applicati
 - `ddl-auto: validate` everywhere — schema is owned by Flyway, not JPA.
 - New migration: `V<N>__<name>.sql` in the service's own `db/migration/`. Never edit a committed migration.
 
+**Outbox pattern** (transaction-service): `markCompleted/markFailed` insert an `outbox_event` row inside the same DB transaction as the status update. `OutboxRelay` (`@Scheduled fixedDelay 1s`) selects pending rows via `findBatchForDispatch` — JPA `PESSIMISTIC_WRITE` + Hibernate hint `jakarta.persistence.lock.timeout=-2` translates to `FOR UPDATE SKIP LOCKED`, so adding a second instance is safe. On Kafka failure: `recordFailure` increments `attempts` and pushes `next_attempt_at` out via exponential backoff (capped 300s). `TxEventPublisher` was removed — Kafka writes only happen from the relay.
+
+## Gateway
+
+Nginx (`gateway` service) listens on `:8080` and is the only client-facing port. Per-zone `limit_req`: `auth_zone` 5r/s burst 10 (login/register brute-force defence), `tx_zone` 30r/s burst 60, `acct_zone` 60r/s burst 120. `/internal/**` returns 404 from the gateway — those endpoints only exist on the docker network for service-to-service calls. Service ports `:8081–:8084` remain exposed for direct testing.
+
+## Tests
+
+Integration tests use Testcontainers (Postgres, Redis via `GenericContainer`). `TransferConcurrencyIT` (account-service) covers the load-bearing concurrency primitives — total preservation, ledger unique-constraint replay rejection, and bidirectional deadlock-free locking. `TransactionIdempotencyIT` (transaction-service) mocks `AccountClient` + `KafkaTemplate` to verify N concurrent same-key `initiate` calls produce exactly one `transactions` row and one `outbox_event` row. Run a single suite: `mvn -pl services/account test -Dtest=TransferConcurrencyIT`.
+
 ## Status
 
-Phase 2 complete (Auth, Account, Transaction, Notification). Phase 3 planned: Testcontainers race/idempotency tests, Nginx gateway, outbox pattern (Kafka publish is currently post-commit and lossy if Kafka is down). Phase 4: AWS deploy (EC2 + RDS + ElastiCache).
+Phase 3 complete (outbox + Testcontainers IT + Nginx gateway). Phase 4: AWS deploy (EC2 + RDS + ElastiCache + ALB).
